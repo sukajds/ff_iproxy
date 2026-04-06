@@ -1,0 +1,7 @@
+title: "I-Proxy"
+version: "0.0.1"
+package_name: "ff_iproxy"
+developer: "스카J"
+description: "UDP/RTP/HTTP 입력 채널을 HTTP 스트림과 HLS 플레이리스트로 중계하는 플러그인"
+home: ""
+more: ""

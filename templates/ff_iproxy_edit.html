@@ -1,0 +1,454 @@
+{% extends "base.html" %}
+{% block content %}
+
+<script src="{{ url_for('static', filename='js/Sortable.js') }}"></script>
+
+{{ macros.m_button_group([['globalSettingSaveBtn', '설정 저장']])}}
+{{ macros.m_row_start('5') }}
+{{ macros.m_row_end() }}
+
+<form id='setting' name='setting'>
+  <input type="hidden" id="manual_channels" name="manual_channels" value='{{ arg["manual_channels"]|e }}'>
+  <input type="hidden" id="manual_channels_source_path_default" value='{{ arg["manual_channels_source_path_default"]|default("", true)|e }}'>
+  <div class="iproxy-import-box">
+    <input type="hidden" id="manual_channels_import_legacy" value='{{ arg["bundled_channels_raw"]|default("", true)|e }}'>
+    <input type="text" id="manual_channels_source_path" name="manual_channels_source_path" class="form-control form-control-sm" value='{{ arg["manual_channels_source_path"]|default("", true)|e }}' placeholder="json, yaml, yml, m3u8 파일 경로">
+    <div class="text-muted iproxy-import-help">json, yaml, yml, m3u8 파일 경로를 입력하시면 해당 목록을 전부 가져옵니다. 예) {{ arg["manual_channels_source_path_default"]|default("", true) }}</div>
+    <div class="iproxy-import-label">채널 목록 가져오기</div>
+    <textarea id="manual_channels_import" class="form-control form-control-sm" rows="6" placeholder="json, yaml, m3u8 형식 채널 목록을 붙여넣으세요. 가져오기를 누르면 아래 목록이 이 내용으로 교체됩니다.">{{ arg['bundled_channels_raw']|default('', true) }}</textarea>
+    <div class="iproxy-import-actions">
+      <button type="button" class="btn btn-sm btn-outline-primary" id="manual_channels_import_btn">가져오기</button>
+      <button type="button" class="btn btn-sm btn-outline-secondary" id="manual_channels_import_clear_btn">입력 비우기</button>
+    </div>
+  </div>
+  <div class="table-responsive iproxy-channel-table">
+    <table class="table table-sm table-striped table-hover">
+      <thead class="thead-dark">
+        <tr>
+          <th style="width:15%">이름</th>
+          <th style="width:43%">주소</th>
+          <th style="width:10%; text-align:center;">타입</th>
+          <th style="width:8%; text-align:center;">
+            <div>EPG 포함</div>
+            <div class="iproxy-bulk-buttons">
+              <button type="button" class="btn btn-sm btn-outline-primary" id="epg_check_all_btn">전부체크</button>
+              <button type="button" class="btn btn-sm btn-outline-secondary" id="epg_uncheck_all_btn">전부해제</button>
+            </div>
+          </th>
+          <th style="width:16%; text-align:center;">정렬</th>
+          <th style="width:8%; text-align:center;">
+            <div>숨김</div>
+            <div class="iproxy-bulk-buttons">
+              <button type="button" class="btn btn-sm btn-outline-primary" id="hidden_check_all_btn">전부체크</button>
+              <button type="button" class="btn btn-sm btn-outline-secondary" id="hidden_uncheck_all_btn">전부해제</button>
+            </div>
+          </th>
+        </tr>
+      </thead>
+      <tbody id="manual-channel-body"></tbody>
+    </table>
+  </div>
+</form>
+
+<template id="manual-channel-row-template">
+  <tr class="manual-channel-item">
+    <td><input type="text" class="form-control form-control-sm manual-name" placeholder="채널 이름"></td>
+    <td><input type="text" class="form-control form-control-sm manual-url" placeholder="udp://, rtp://, http://, https:// 주소"></td>
+    <td class="text-center align-middle">
+      <input type="text" class="form-control form-control-sm manual-type text-center" placeholder="자동" readonly>
+    </td>
+    <td class="text-center align-middle">
+      <input type="checkbox" class="manual-epg-enabled">
+    </td>
+    <td class="text-center align-middle text-nowrap">
+      <span class="sort-handle" title="드래그해서 순서 변경">⇅</span>
+      <button type="button" class="btn btn-sm btn-outline-primary move-up-btn">위</button>
+      <button type="button" class="btn btn-sm btn-outline-primary move-down-btn">아래</button>
+      <button type="button" class="btn btn-sm btn-outline-danger remove-manual-channel-btn">삭제</button>
+      <button type="button" class="btn btn-sm btn-outline-primary add-manual-channel-btn">추가</button>
+    </td>
+    <td class="text-center align-middle">
+      <input type="checkbox" class="manual-hidden">
+    </td>
+  </tr>
+</template>
+
+<style type="text/css">
+#manual-channel-body .form-control,
+#manual-channel-body .btn {
+  font-size: inherit;
+}
+
+#manual-channel-body .btn {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.sort-handle {
+  display: inline-block;
+  min-width: 22px;
+  margin-right: 4px;
+  text-align: center;
+  font-size: 18px;
+  line-height: 1;
+  color: #1d6fa5;
+  cursor: move;
+  user-select: none;
+  vertical-align: middle;
+}
+
+.manual-channel-item.sortable-ghost {
+  opacity: 0.45;
+}
+
+.manual-channel-item.sortable-chosen {
+  background-color: #f1f7fb;
+}
+
+#manual-channel-body td {
+  vertical-align: middle;
+}
+
+#manual-channel-body .manual-type {
+  min-width: 60px;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+
+.table-responsive.iproxy-channel-table {
+  width: 95%;
+  margin: 0 auto;
+}
+
+.iproxy-bulk-buttons {
+  margin-top: 4px;
+}
+
+.iproxy-bulk-buttons .btn {
+  margin: 1px;
+  padding: 1px 6px;
+  font-size: 11px;
+}
+
+.iproxy-import-box {
+  width: 95%;
+  margin: 0 auto 12px auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.iproxy-import-label {
+  font-weight: 600;
+  margin-bottom: 6px;
+  order: 1;
+}
+
+.iproxy-import-actions {
+  margin-top: 8px;
+  order: 4;
+}
+
+.iproxy-import-actions .btn {
+  margin-right: 4px;
+}
+
+.iproxy-import-help {
+  margin-top: 6px;
+  font-size: 12px;
+  order: 3;
+}
+
+#manual_channels_source_path {
+  order: 2;
+}
+
+#manual_channels_import {
+  display: none;
+}
+</style>
+
+<script type="text/javascript">
+const manualChannelBody = document.querySelector('#manual-channel-body');
+const manualChannelRowTemplate = document.querySelector('#manual-channel-row-template');
+let manualChannelSortable = null;
+function syncManualChannels() {
+  const rows = [];
+  manualChannelBody.querySelectorAll('.manual-channel-item').forEach((row) => {
+    const name = row.querySelector('.manual-name').value.trim();
+    const url = row.querySelector('.manual-url').value.trim();
+    if (!name || !url) {
+      return;
+    }
+    rows.push({
+      id: row.dataset.channelId || '',
+      name: name,
+      url: url,
+      type: row.querySelector('.manual-type').value.trim(),
+      type_diagnosed: row.dataset.typeDiagnosed === 'true',
+      epg_source: 'AUTO',
+      epg_enabled: row.querySelector('.manual-epg-enabled').checked,
+      hidden: row.querySelector('.manual-hidden').checked
+    });
+  });
+  $('#manual_channels').val(JSON.stringify(rows));
+}
+
+function collectManualChannels() {
+  const rows = [];
+  manualChannelBody.querySelectorAll('.manual-channel-item').forEach((row) => {
+    rows.push({
+      id: row.dataset.channelId || '',
+      name: row.querySelector('.manual-name').value.trim(),
+      url: row.querySelector('.manual-url').value.trim(),
+      type: row.querySelector('.manual-type').value.trim(),
+      type_diagnosed: row.dataset.typeDiagnosed === 'true',
+      epg_source: 'AUTO',
+      epg_enabled: row.querySelector('.manual-epg-enabled').checked,
+      hidden: row.querySelector('.manual-hidden').checked
+    });
+  });
+  return rows;
+}
+
+function initManualChannelSortable() {
+  if (!manualChannelBody) return;
+  if (manualChannelSortable) {
+    manualChannelSortable.destroy();
+    manualChannelSortable = null;
+  }
+  manualChannelSortable = new Sortable(manualChannelBody, {
+    animation: 150,
+    handle: '.sort-handle',
+    draggable: '.manual-channel-item',
+    ghostClass: 'sortable-ghost',
+    chosenClass: 'sortable-chosen',
+    onEnd: function() {
+      syncManualChannels();
+    }
+  });
+}
+
+function addManualChannelRow(data) {
+  const row = manualChannelRowTemplate.content.cloneNode(true);
+  const item = row.querySelector('.manual-channel-item');
+  item.dataset.channelId = data && (data.id || data.id_hint) ? (data.id || data.id_hint) : '';
+  item.dataset.typeDiagnosed = data && data.type_diagnosed ? 'true' : 'false';
+  item.querySelector('.manual-name').value = data && data.name ? data.name : '';
+  item.querySelector('.manual-url').value = data && data.url ? data.url : '';
+  item.querySelector('.manual-type').value = data && data.type_diagnosed && data.type ? data.type : '';
+  item.querySelector('.manual-epg-enabled').checked = data && data.epg_enabled !== undefined ? !!data.epg_enabled : false;
+  item.querySelector('.manual-hidden').checked = !!(data && data.hidden);
+  manualChannelBody.appendChild(item);
+}
+
+function renderManualChannels(rows) {
+  let items = Array.isArray(rows) ? rows.slice() : [];
+  if (items.length === 0) {
+    items = [{}];
+  }
+  items = items.map(function(row) {
+    return Object.assign({epg_source: 'AUTO', epg_enabled: false, type: '', type_diagnosed: false}, row);
+  });
+  manualChannelBody.innerHTML = '';
+  items.forEach((row) => addManualChannelRow(row));
+  initManualChannelSortable();
+  syncManualChannels();
+}
+
+function loadManualChannels() {
+  let rows = [];
+  try {
+    rows = JSON.parse({{ arg['manual_channels_json']|tojson }});
+  } catch (e) {
+    rows = [];
+  }
+  renderManualChannels(rows);
+}
+
+$(document).ready(function(){
+  $('.iproxy-import-label').text('채널 목록 가져오기');
+  $('#manual_channels_import_clear_btn').text('기본 경로');
+  if (!$('#manual_channels_source_path').val().trim()) {
+    $('#manual_channels_source_path').val($('#manual_channels_source_path_default').val() || '');
+  }
+  loadManualChannels();
+});
+
+$("body").on('click', '.add-manual-channel-btn', function(e){
+  e.preventDefault();
+  const items = collectManualChannels();
+  items.push({name: '', url: '', type: '', epg_source: 'AUTO', epg_enabled: false, hidden: false});
+  renderManualChannels(items);
+});
+
+$("body").on('click', '.remove-manual-channel-btn', function(e){
+  e.preventDefault();
+  const items = collectManualChannels();
+  const index = $(this).closest('.manual-channel-item').index();
+  items.splice(index, 1);
+  if (items.length === 0) {
+    items.push({name: '', url: '', type: '', epg_source: 'AUTO', epg_enabled: false, hidden: false});
+  }
+  renderManualChannels(items);
+});
+
+$("body").on('click', '.move-up-btn', function(e){
+  e.preventDefault();
+  const items = collectManualChannels();
+  const index = $(this).closest('.manual-channel-item').index();
+  if (index <= 0) return;
+  const temp = items[index - 1];
+  items[index - 1] = items[index];
+  items[index] = temp;
+  renderManualChannels(items);
+});
+
+$("body").on('click', '.move-down-btn', function(e){
+  e.preventDefault();
+  const items = collectManualChannels();
+  const index = $(this).closest('.manual-channel-item').index();
+  if (index < 0 || index >= items.length - 1) return;
+  const temp = items[index + 1];
+  items[index + 1] = items[index];
+  items[index] = temp;
+  renderManualChannels(items);
+});
+
+$("body").on('click', '#manual_channels_import_clear_btn', function(e){
+  e.preventDefault();
+  $('#manual_channels_source_path').val($('#manual_channels_source_path_default').val() || '');
+});
+
+$("body").on('click', '#manual_channels_import_btn', async function(e){
+  e.preventDefault();
+  const sourcePath = ($('#manual_channels_source_path').val() || '').trim();
+  const raw = ($('#manual_channels_import').val() || '').trim();
+  const importValue = sourcePath || raw;
+  if (!importValue) {
+    $.notify('가져올 채널 목록을 입력하세요.', {type: 'warning'});
+    return;
+  }
+  try {
+    const ret = await $.ajax({
+      url: `/${PACKAGE_NAME}/ajax/import_manual_channels`,
+      type: 'POST',
+      cache: false,
+      data: { source_path: importValue },
+      dataType: 'json'
+    });
+    if (ret && ret.ret === 'success' && Array.isArray(ret.channels)) {
+      renderManualChannels(ret.channels);
+      if (sourcePath) {
+        $('#manual_channels_source_path').val(sourcePath);
+      }
+      $.notify(`${ret.channels.length}개 채널을 ${ret.format || '입력'} 형식에서 가져왔습니다.`, {type: 'success'});
+    } else {
+      $.notify((ret && ret.msg) ? ret.msg : '채널 목록을 가져오지 못했습니다.', {type: 'warning'});
+    }
+  } catch (xhr) {
+    $.notify((xhr && xhr.responseJSON && xhr.responseJSON.msg) ? xhr.responseJSON.msg : '채널 목록 가져오기에 실패했습니다.', {type: 'warning'});
+  }
+});
+
+$("body").on('input change', '.manual-name, .manual-url, .manual-hidden, .manual-epg-enabled', function(e){
+  if ($(this).hasClass('manual-url')) {
+    const $row = $(this).closest('.manual-channel-item');
+    $row[0].dataset.typeDiagnosed = 'false';
+    $row.find('.manual-type').val('');
+  }
+  syncManualChannels();
+});
+
+$("body").on('click', '#epg_check_all_btn', function(e){
+  e.preventDefault();
+  $('.manual-epg-enabled').prop('checked', true);
+  syncManualChannels();
+});
+
+$("body").on('click', '#epg_uncheck_all_btn', function(e){
+  e.preventDefault();
+  $('.manual-epg-enabled').prop('checked', false);
+  syncManualChannels();
+});
+
+$("body").on('click', '#hidden_check_all_btn', function(e){
+  e.preventDefault();
+  $('.manual-hidden').prop('checked', true);
+  syncManualChannels();
+});
+
+$("body").on('click', '#hidden_uncheck_all_btn', function(e){
+  e.preventDefault();
+  $('.manual-hidden').prop('checked', false);
+  syncManualChannels();
+});
+
+async function saveEditSettings() {
+  syncManualChannels();
+  const rowsToDiagnose = Array.from(manualChannelBody.querySelectorAll('.manual-channel-item')).filter((row) => {
+    const name = row.querySelector('.manual-name').value.trim();
+    const url = row.querySelector('.manual-url').value.trim();
+    const type = row.querySelector('.manual-type').value.trim();
+    return name && url && !type;
+  });
+
+  for (let i = 0; i < rowsToDiagnose.length; i++) {
+    const row = rowsToDiagnose[i];
+    const channelId = row.dataset.channelId || '';
+    const channelUrl = row.querySelector('.manual-url').value.trim();
+    $.notify(`채널 타입을 파악하고 있습니다 (${i + 1}/${rowsToDiagnose.length})`, {type: 'info'});
+    try {
+      const ret = await $.ajax({
+        url: `/${PACKAGE_NAME}/ajax/diagnose_manual_channel`,
+        type: 'POST',
+        cache: false,
+        data: {
+          id: channelId,
+          url: channelUrl
+        },
+        dataType: 'json'
+      });
+      if (ret && ret.ret === 'success' && ret.data && ret.data.detected_type) {
+        row.querySelector('.manual-type').value = ret.data.detected_type;
+        row.dataset.typeDiagnosed = 'true';
+      }
+    } catch (e) {
+    }
+  }
+  if (rowsToDiagnose.length > 0) {
+    $.notify('채널 타입 진단이 모두 완료되었습니다.', {type: 'success'});
+  }
+  syncManualChannels();
+  $.ajax({
+    url: `/${PACKAGE_NAME}/ajax/save_settings`,
+    type: 'POST',
+    cache: false,
+    data: {
+      manual_channels: $('#manual_channels').val() || '[]',
+      manual_channels_source_path: ($('#manual_channels_source_path').val() || '').trim()
+    },
+    dataType: 'json',
+    success: function(ret) {
+      if (ret && ret.ret === 'success') {
+        $.notify('<strong>설정을 저장했습니다.</strong>', {type: 'success'});
+      } else {
+        $.notify('<strong>설정 저장에 실패했습니다.</strong><br>' + ((ret && ret.msg) ? ret.msg : ''), {type: 'warning'});
+      }
+    },
+    error: function(xhr) {
+      $.notify('<strong>설정 저장에 실패했습니다.</strong><br>' + (xhr.responseText || 'request failed'), {type: 'warning'});
+    }
+  });
+}
+
+document.addEventListener('click', function(e) {
+  const target = e.target.closest('#globalSettingSaveBtn');
+  if (!target) return;
+  e.preventDefault();
+  e.stopPropagation();
+  e.stopImmediatePropagation();
+  saveEditSettings();
+}, true);
+</script>
+
+{% endblock %}
