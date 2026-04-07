@@ -767,6 +767,83 @@ def build_alive_fix_url_block(channels):
     return '\n'.join(lines) + '\n'
 
 
+def parse_alive_fix_url_block(lines, fix_url_indent):
+    if not lines:
+        return []
+    normalized_lines = []
+    for line in lines:
+        if line.startswith(' ' * fix_url_indent):
+            normalized_lines.append(line[fix_url_indent:])
+        else:
+            normalized_lines.append(line.lstrip(' '))
+    block_text = '\n'.join(normalized_lines) + '\n'
+
+    if yaml is None:
+        return []
+
+    try:
+        parsed = yaml.safe_load(block_text) or {}
+    except Exception:
+        logger.exception('Failed to parse existing fix_url block from alive.yaml')
+        return []
+
+    fix_url = parsed.get('fix_url')
+    if not isinstance(fix_url, dict):
+        return []
+
+    channels = []
+    for key, item in fix_url.items():
+        if not isinstance(item, dict):
+            continue
+        channel_name = str(item.get('name') or key or '').strip()
+        channel_url = str(item.get('url') or '').strip()
+        if not channel_name or not channel_url:
+            continue
+        channels.append({
+            'name': channel_name,
+            'url': channel_url,
+        })
+    return channels
+
+
+def merge_alive_fix_url_channels(existing_channels, new_channels):
+    merged = [
+        {
+            'name': str(channel.get('name') or '').strip(),
+            'url': str(channel.get('url') or '').strip(),
+        }
+        for channel in existing_channels
+        if str(channel.get('name') or '').strip() and str(channel.get('url') or '').strip()
+    ]
+
+    for channel in new_channels:
+        channel_name = str(channel.get('name') or '').strip()
+        channel_url = str(channel.get('url') or '').strip()
+        if not channel_name or not channel_url:
+            continue
+
+        replace_index = None
+        for index, existing in enumerate(merged):
+            existing_name = str(existing.get('name') or '').strip()
+            existing_url = str(existing.get('url') or '').strip()
+            if existing_name == channel_name or existing_url == channel_url:
+                replace_index = index
+                break
+
+        if replace_index is None:
+            merged.append({
+                'name': channel_name,
+                'url': channel_url,
+            })
+        else:
+            merged[replace_index] = {
+                'name': channel_name,
+                'url': channel_url,
+            }
+
+    return merged
+
+
 def get_alive_yaml_mode():
     mode = (ModelSetting.get('alive_yaml_mode') or 'stream').strip().lower()
     return 'hls' if mode == 'hls' else 'stream'
@@ -804,8 +881,6 @@ def update_alive_fix_url(req):
             'url': payload['hls_url'] if alive_mode == 'hls' else payload['stream_url'],
         })
 
-    block_text = build_alive_fix_url_block(alive_channels).rstrip('\n')
-
     channel_source_index = None
     channel_source_indent = 0
     for index, line in enumerate(lines):
@@ -813,6 +888,25 @@ def update_alive_fix_url(req):
             channel_source_index = index
             channel_source_indent = len(line) - len(line.lstrip(' '))
             break
+
+    existing_fix_url_channels = []
+    fix_url_index = None
+    fix_url_end = None
+    if channel_source_index is not None:
+        channel_source_end = _find_block_end(lines, channel_source_index, channel_source_indent)
+        fix_url_indent = channel_source_indent + 2
+        for index in range(channel_source_index + 1, channel_source_end):
+            if lines[index].strip() == 'fix_url:':
+                current_indent = len(lines[index]) - len(lines[index].lstrip(' '))
+                if current_indent == fix_url_indent:
+                    fix_url_index = index
+                    break
+        if fix_url_index is not None:
+            fix_url_end = _find_block_end(lines, fix_url_index, fix_url_indent)
+            existing_fix_url_channels = parse_alive_fix_url_block(lines[fix_url_index:fix_url_end], fix_url_indent)
+
+    merged_alive_channels = merge_alive_fix_url_channels(existing_fix_url_channels, alive_channels)
+    block_text = build_alive_fix_url_block(merged_alive_channels).rstrip('\n')
 
     if channel_source_index is None:
         if original_text and not original_text.endswith('\n'):
@@ -822,19 +916,9 @@ def update_alive_fix_url(req):
             prefix += '\n'
         new_text = prefix + 'channel_source:\n' + block_text + '\n'
     else:
-        channel_source_end = _find_block_end(lines, channel_source_index, channel_source_indent)
-        fix_url_index = None
-        fix_url_indent = channel_source_indent + 2
-        for index in range(channel_source_index + 1, channel_source_end):
-            if lines[index].strip() == 'fix_url:':
-                current_indent = len(lines[index]) - len(lines[index].lstrip(' '))
-                if current_indent == fix_url_indent:
-                    fix_url_index = index
-                    break
         if fix_url_index is None:
             new_lines = lines[:channel_source_index + 1] + block_text.splitlines() + lines[channel_source_index + 1:]
         else:
-            fix_url_end = _find_block_end(lines, fix_url_index, fix_url_indent)
             new_lines = lines[:fix_url_index] + block_text.splitlines() + lines[fix_url_end:]
         new_text = '\n'.join(new_lines)
         if original_text.endswith('\n') or not new_text.endswith('\n'):
@@ -843,7 +927,7 @@ def update_alive_fix_url(req):
     path.write_text(new_text, encoding='utf-8')
     return {
         'path': str(path),
-        'count': len(alive_channels),
+        'count': len(merged_alive_channels),
     }
 
 
