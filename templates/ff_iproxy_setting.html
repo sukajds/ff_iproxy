@@ -106,6 +106,20 @@
         desc=['전체 채널을 HLS 주소로 생성합니다.', 'UDP 채널은 ffmpeg로 HLS를 만들고, HTTP m3u8 채널은 세그먼트 URL을 다시 써서 전달합니다.']
       ) }}
       {{ macros.info_text_go_buttons(
+        'stream_tvh_playlist_url',
+        'TVH 스트림 플레이리스트',
+        [['globalCliboardBtn', '클립보드에 복사', [['text', arg['stream_tvh_playlist_url']]]], ['globalOpenBtn', '열기', [['url', arg['stream_tvh_playlist_url']]]]],
+        value=arg['stream_tvh_playlist_url'],
+        desc=['Tvheadend용 ffmpeg pipe 형식의 스트림 플레이리스트입니다.', '각 채널은 ffmpeg pipe:// 명령으로 생성되며 stream URL을 입력으로 사용합니다.']
+      ) }}
+      {{ macros.info_text_go_buttons(
+        'hls_tvh_playlist_url',
+        'TVH HLS 플레이리스트',
+        [['globalCliboardBtn', '클립보드에 복사', [['text', arg['hls_tvh_playlist_url']]]], ['globalOpenBtn', '열기', [['url', arg['hls_tvh_playlist_url']]]]],
+        value=arg['hls_tvh_playlist_url'],
+        desc=['Tvheadend용 ffmpeg pipe 형식의 HLS 플레이리스트입니다.', '각 채널은 ffmpeg pipe:// 명령으로 생성되며 HLS URL을 입력으로 사용합니다.']
+      ) }}
+      {{ macros.info_text_go_buttons(
         'epg_xml_url',
         'EPG XML',
         [['globalCliboardBtn', '클립보드에 복사', [['text', arg['epg_xml_url']]]], ['globalOpenBtn', '열기', [['url', arg['epg_xml_url']]]]],

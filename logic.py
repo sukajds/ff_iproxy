@@ -1798,6 +1798,46 @@ def build_playlist(req, mode='stream', include_all=True):
     return '\n'.join(lines) + '\n'
 
 
+def _escape_tvh_attr(value):
+    return str(value or '').replace('&', '&amp;').replace('"', '&quot;')
+
+
+def _escape_tvh_pipe_value(value):
+    return str(value or '').replace('\\', '\\\\').replace('"', '\\"')
+
+
+def build_playlist_tvh(req, mode='stream', include_all=True):
+    lines = ['#EXTM3U']
+    user_agent = ModelSetting.get('user_agent') or 'Mozilla/5.0'
+    for idx, channel in enumerate(get_channels(), start=1):
+        if channel.get('hidden') and not include_all:
+            continue
+        payload = make_channel_payload(channel, req)
+        display_name = str(channel.get('name') or '').strip()
+        if not display_name:
+            continue
+        url = payload['hls_url'] if mode == 'hls' else payload['stream_url']
+        lines.append(
+            '#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{tvg_name}" tvg-logo="" '
+            'group-title="I-Proxy" tvg-chno="{chno}" tvh-chnum="{chno}",{display}'.format(
+                tvg_id=_escape_tvh_attr(display_name),
+                tvg_name=_escape_tvh_attr(display_name),
+                chno=idx,
+                display=display_name,
+            )
+        )
+        lines.append(
+            'pipe://ffmpeg -user_agent "{ua}" -loglevel quiet -i "{url}" '
+            '-c copy -metadata service_provider=ff_iproxy -metadata service_name="{name}" '
+            '-c:v copy -c:a aac -b:a 128k -f mpegts -tune zerolatency pipe:1'.format(
+                ua=_escape_tvh_pipe_value(user_agent),
+                url=_escape_tvh_pipe_value(url),
+                name=_escape_tvh_pipe_value(display_name),
+            )
+        )
+    return '\n'.join(lines) + '\n'
+
+
 def get_epg_dir():
     path = get_plugin_data_dir() / 'epg'
     path.mkdir(parents=True, exist_ok=True)
@@ -2729,6 +2769,8 @@ class Logic(PluginModuleBase):
         arg['package_name'] = package_name
         arg['stream_playlist_url'] = with_apikey(f'{base}/api/playlist.m3u?mode=stream')
         arg['hls_playlist_url'] = with_apikey(f'{base}/api/playlist.m3u?mode=hls')
+        arg['stream_tvh_playlist_url'] = with_apikey(f'{base}/api/playlist_tvh.m3u?mode=stream')
+        arg['hls_tvh_playlist_url'] = with_apikey(f'{base}/api/playlist_tvh.m3u?mode=hls')
         arg['epg_xml_url'] = with_apikey(f'{base}/api/epg.xml')
         arg['channel_count'] = len(get_channels())
         arg['epg_source_options'] = EPG_SOURCE_OPTIONS
@@ -2955,6 +2997,18 @@ def api_playlist():
     else:
         include_all = include_param == 'all'
     return Response(build_playlist(request, mode=mode, include_all=include_all), content_type='audio/mpegurl')
+
+
+@blueprint.route('/api/playlist_tvh.m3u', methods=['GET'])
+def api_playlist_tvh():
+    require_api_key(request)
+    mode = request.args.get('mode', 'stream')
+    include_param = request.args.get('include')
+    if include_param is None:
+        include_all = ModelSetting.get_bool('include_hidden_channels')
+    else:
+        include_all = include_param == 'all'
+    return Response(build_playlist_tvh(request, mode=mode, include_all=include_all), content_type='audio/mpegurl')
 
 
 @blueprint.route('/api/channels.json', methods=['GET'])
