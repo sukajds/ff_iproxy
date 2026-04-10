@@ -18,7 +18,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from xml.sax.saxutils import escape as xml_escape
 
-from flask import Response, abort, jsonify, render_template, request
+from flask import Response, abort, jsonify, redirect, render_template, request
 from plugin import F, PluginModuleBase, Job
 import requests
 try:
@@ -329,6 +329,18 @@ def detect_iproxy_api_type(url):
         if mode == 'hls':
             return 'http_hls'
     return ''
+
+
+def is_forward_channel_url(url):
+    text = str(url or '').strip()
+    normalized = normalize_url_to_localhost_if_ddns(text)
+    if normalized != text:
+        return True
+    parsed = urllib.parse.urlparse(text)
+    host = (parsed.hostname or '').strip().lower()
+    if host not in ('localhost', '127.0.0.1'):
+        return False
+    return bool(detect_iproxy_api_type(url))
 
 
 def apply_known_channel_types(items):
@@ -709,7 +721,8 @@ def load_import_source(raw):
         }
 
     if re.match(r'^https?://', text, re.I):
-        req = urllib.request.Request(text, headers={'User-Agent': ModelSetting.get('user_agent') or 'Mozilla/5.0'})
+        target_url = normalize_url_to_localhost_if_ddns(text)
+        req = urllib.request.Request(target_url, headers={'User-Agent': ModelSetting.get('user_agent') or 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=15) as resp:
             content = resp.read().decode('utf-8', errors='replace')
         return {
@@ -736,7 +749,91 @@ def import_channels_from_source(raw):
     loaded = load_import_source(raw)
     parsed = parse_import_channels(loaded['content'])
     parsed['source'] = loaded['source']
+    parsed['channels'] = restore_localhost_urls_to_source_host(parsed.get('channels', []), loaded['source'])
+    parsed['channels'] = mark_forward_channels(parsed.get('channels', []))
     return parsed
+
+
+def normalize_url_to_localhost_if_ddns(url):
+    ddns = (SystemModelSetting.get('ddns') or '').strip()
+    if not ddns:
+        return url
+
+    ddns_parsed = urllib.parse.urlparse(ddns)
+    ddns_host = (ddns_parsed.hostname or '').strip().lower()
+    if not ddns_host:
+        return url
+    ddns_port = ddns_parsed.port
+
+    parsed = urllib.parse.urlparse(str(url or '').strip())
+    host = (parsed.hostname or '').strip().lower()
+    port = parsed.port
+    if parsed.scheme not in ('http', 'https'):
+        return url
+    if host != ddns_host:
+        return url
+    if not (ddns_port in (None, port) or port in (None, ddns_port)):
+        return url
+
+    netloc = 'localhost'
+    if port is not None:
+        netloc = f'{netloc}:{port}'
+    elif ddns_port is not None:
+        netloc = f'{netloc}:{ddns_port}'
+    return urllib.parse.urlunparse((
+        parsed.scheme,
+        netloc,
+        parsed.path,
+        parsed.params,
+        parsed.query,
+        parsed.fragment,
+    ))
+
+
+def restore_localhost_urls_to_source_host(channels, source_url):
+    source_text = str(source_url or '').strip()
+    if not re.match(r'^https?://', source_text, re.I):
+        return channels
+
+    source_parsed = urllib.parse.urlparse(source_text)
+    source_host = (source_parsed.hostname or '').strip()
+    if not source_host:
+        return channels
+
+    normalized = []
+    for channel in channels or []:
+        item = dict(channel)
+        url = str(item.get('url') or '').strip()
+        parsed = urllib.parse.urlparse(url)
+        host = (parsed.hostname or '').strip().lower()
+        if parsed.scheme in ('http', 'https') and host in ('localhost', '127.0.0.1'):
+            netloc = source_host
+            if parsed.port is not None:
+                netloc = f'{netloc}:{parsed.port}'
+            elif source_parsed.port is not None:
+                netloc = f'{netloc}:{source_parsed.port}'
+            item['url'] = urllib.parse.urlunparse((
+                source_parsed.scheme or parsed.scheme,
+                netloc,
+                parsed.path,
+                parsed.params,
+                parsed.query,
+                parsed.fragment,
+            ))
+        normalized.append(item)
+    return normalized
+
+
+def mark_forward_channels(channels):
+    normalized = []
+    for channel in channels or []:
+        item = dict(channel)
+        if is_forward_channel_url(item.get('url') or ''):
+            item['type'] = 'forward'
+            item['type_diagnosed'] = True
+            item['rtp'] = False
+        normalized.append(item)
+    return normalized
 
 
 def get_alive_yaml_path():
@@ -1458,6 +1555,16 @@ def encoder_is_usable(ffmpeg_path, encoder, force=False, with_device=False):
 def probe_channel_type(url, timeout=3):
     parsed = urllib.parse.urlparse(url)
     logger.info('[DIAG] probe start url=%s timeout=%s scheme=%s', url, timeout, parsed.scheme or '')
+    if is_forward_channel_url(url):
+        normalized_url = normalize_url_to_localhost_if_ddns(url)
+        return {
+            'ret': 'success',
+            'msg': '포워드 채널로 처리합니다.',
+            'data': {
+                'detected_type': 'forward',
+                'suggested_url': normalized_url,
+            },
+        }
     if parsed.scheme in ('http', 'https'):
         iproxy_type = detect_iproxy_api_type(url)
         if iproxy_type:
@@ -1811,6 +1918,10 @@ def make_channel_payload(channel, req):
     hls_url = with_request_apikey(f'{base}/api/hls/{channel["id"]}', req)
     stream_url = with_request_apikey(f'{base}/api/stream/{channel["id"]}', req)
     player_url = with_request_apikey(f'{base}/player/{channel["id"]}', req)
+    if channel.get('type') == 'forward':
+        hls_url = channel['url']
+        stream_url = channel['url']
+        player_url = channel['url']
     return {
         'id': channel['id'],
         'name': channel['name'],
@@ -2822,6 +2933,7 @@ class Logic(PluginModuleBase):
         arg['bundled_channels_raw'] = get_bundled_channels_raw()
         arg['manual_channels_source_path_default'] = get_default_manual_channels_source_path()
         arg['manual_channels_source_path'] = get_manual_channels_source_path()
+        arg['system_ddns'] = (SystemModelSetting.get('ddns') or '').strip()
         try:
             arg['manual_channels'] = get_manual_channels_raw()
             arg['manual_channels_json'] = json.dumps(parse_manual_channels(arg['manual_channels']), ensure_ascii=False)
@@ -3154,6 +3266,9 @@ def api_stream(channel_id):
         abort(404)
     logger.info('[PLAYER] stream_request channel=%s type=%s remote=%s ua=%s', channel.get('name'), channel.get('type'), request.remote_addr, request.headers.get('User-Agent', ''))
 
+    if channel['type'] == 'forward':
+        return redirect(channel['url'], code=302)
+
     if channel['type'] in ('udp', 'rtp'):
         return Response(stream_via_ffmpeg_copy(channel), mimetype='video/MP2T')
 
@@ -3198,6 +3313,9 @@ def api_hls(channel_id):
         abort(404)
     logger.info('[PLAYER] hls_request channel=%s type=%s remote=%s ua=%s', channel.get('name'), channel.get('type'), request.remote_addr, request.headers.get('User-Agent', ''))
     request_options = get_hls_request_options(request)
+
+    if channel['type'] == 'forward':
+        return redirect(channel['url'], code=302)
 
     if hls_request_uses_proxy(channel, request_options):
         content = get_proxied_m3u8(channel_id, request)

@@ -12,14 +12,16 @@
   <input type="hidden" id="manual_channels_source_path_default" value='{{ arg["manual_channels_source_path_default"]|default("", true)|e }}'>
   <div class="iproxy-import-box">
     <input type="hidden" id="manual_channels_import_legacy" value='{{ arg["bundled_channels_raw"]|default("", true)|e }}'>
-    <input type="text" id="manual_channels_source_path" name="manual_channels_source_path" class="form-control form-control-sm" value='{{ arg["manual_channels_source_path"]|default("", true)|e }}' placeholder="json, yaml, yml, m3u8 파일 경로">
-    <div class="text-muted iproxy-import-help">json, yaml, yml, m3u8 파일 경로를 입력하시면 해당 목록을 전부 가져옵니다. 예) {{ arg["manual_channels_source_path_default"]|default("", true) }}</div>
     <div class="iproxy-import-label">채널 목록 가져오기</div>
-    <textarea id="manual_channels_import" class="form-control form-control-sm" rows="6" placeholder="json, yaml, m3u8 형식 채널 목록을 붙여넣으세요. 가져오기를 누르면 아래 목록이 이 내용으로 교체됩니다.">{{ arg['bundled_channels_raw']|default('', true) }}</textarea>
-    <div class="iproxy-import-actions">
-      <button type="button" class="btn btn-sm btn-outline-primary" id="manual_channels_import_btn">가져오기</button>
-      <button type="button" class="btn btn-sm btn-outline-secondary" id="manual_channels_import_clear_btn">입력 비우기</button>
+    <div class="iproxy-import-top">
+      <input type="text" id="manual_channels_source_path" name="manual_channels_source_path" class="form-control form-control-sm" value='{{ arg["manual_channels_source_path"]|default("", true)|e }}' placeholder="json, yaml, yml, m3u8 파일 경로">
+      <div class="iproxy-import-top-actions">
+        <button type="button" class="btn btn-sm btn-outline-primary" id="manual_channels_replace_btn">교체하기</button>
+        <button type="button" class="btn btn-sm btn-outline-primary" id="manual_channels_append_btn">추가하기</button>
+      </div>
     </div>
+    <div class="text-muted iproxy-import-help">json, yaml, yml, m3u8 파일 경로를 입력하시면 해당 목록을 전부 가져옵니다. 예) {{ arg["manual_channels_source_path_default"]|default("", true) }}</div>
+    <textarea id="manual_channels_import" class="form-control form-control-sm" rows="6" placeholder="json, yaml, m3u8 형식 채널 목록을 붙여넣으세요. 가져오기를 누르면 아래 목록이 이 내용으로 교체됩니다.">{{ arg['bundled_channels_raw']|default('', true) }}</textarea>
   </div>
   <div class="table-responsive iproxy-channel-table">
     <table class="table table-sm table-striped table-hover">
@@ -133,33 +135,35 @@
 .iproxy-import-box {
   width: 95%;
   margin: 0 auto 12px auto;
-  display: flex;
-  flex-direction: column;
 }
 
 .iproxy-import-label {
   font-weight: 600;
   margin-bottom: 6px;
-  order: 1;
 }
 
-.iproxy-import-actions {
-  margin-top: 8px;
-  order: 4;
+.iproxy-import-top {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
 }
 
-.iproxy-import-actions .btn {
-  margin-right: 4px;
+.iproxy-import-top #manual_channels_source_path {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .iproxy-import-help {
-  margin-top: 6px;
+  margin-bottom: 6px;
   font-size: 12px;
-  order: 3;
 }
 
-#manual_channels_source_path {
-  order: 2;
+.iproxy-import-top-actions {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 #manual_channels_import {
@@ -171,6 +175,7 @@
 const manualChannelBody = document.querySelector('#manual-channel-body');
 const manualChannelRowTemplate = document.querySelector('#manual-channel-row-template');
 let manualChannelSortable = null;
+const systemDdns = {{ arg['system_ddns']|tojson }};
 function syncManualChannels() {
   const rows = [];
   manualChannelBody.querySelectorAll('.manual-channel-item').forEach((row) => {
@@ -255,6 +260,96 @@ function renderManualChannels(rows) {
   syncManualChannels();
 }
 
+function normalizeDuplicateValue(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function appendUniqueManualChannels(rows) {
+  const items = collectManualChannels().filter((row) => row.name || row.url);
+  const seenNames = new Set(items.map((row) => normalizeDuplicateValue(row.name)).filter(Boolean));
+  const seenUrls = new Set(items.map((row) => normalizeDuplicateValue(row.url)).filter(Boolean));
+  let addedCount = 0;
+  let skippedCount = 0;
+
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const nameKey = normalizeDuplicateValue(row && row.name);
+    const urlKey = normalizeDuplicateValue(row && row.url);
+    if (!nameKey || !urlKey) {
+      return;
+    }
+    if (seenNames.has(nameKey) || seenUrls.has(urlKey)) {
+      skippedCount += 1;
+      return;
+    }
+    seenNames.add(nameKey);
+    seenUrls.add(urlKey);
+    items.push(row);
+    addedCount += 1;
+  });
+
+  renderManualChannels(items);
+  return { addedCount, skippedCount };
+}
+
+function normalizeUrlToLocalhostIfDdns(url) {
+  const text = String(url || '').trim();
+  if (!text || !systemDdns) {
+    return text;
+  }
+  try {
+    const target = new URL(text);
+    const ddns = new URL(systemDdns);
+    const targetHost = (target.hostname || '').toLowerCase();
+    const ddnsHost = (ddns.hostname || '').toLowerCase();
+    const targetPort = target.port || '';
+    const ddnsPort = ddns.port || '';
+    if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+      return text;
+    }
+    if (targetHost !== ddnsHost) {
+      return text;
+    }
+    if (ddnsPort && targetPort && ddnsPort !== targetPort) {
+      return text;
+    }
+    target.hostname = 'localhost';
+    if (!targetPort && ddnsPort) {
+      target.port = ddnsPort;
+    }
+    return target.toString();
+  } catch (e) {
+    return text;
+  }
+}
+
+function isForwardChannelUrl(url) {
+  const text = String(url || '').trim();
+  if (!text) {
+    return false;
+  }
+  try {
+    const target = new URL(text);
+    const normalized = normalizeUrlToLocalhostIfDdns(text);
+    if (normalized !== text) {
+      return true;
+    }
+    const host = (target.hostname || '').toLowerCase();
+    const path = (target.pathname || '').toLowerCase();
+    if (host !== 'localhost' && host !== '127.0.0.1') {
+      return false;
+    }
+    if (path.indexOf('/api/hls/') >= 0) {
+      return true;
+    }
+    if (path.endsWith('/api/playlist.m3u') || path.indexOf('/api/playlist.m3u/') >= 0) {
+      return true;
+    }
+  } catch (e) {
+    return false;
+  }
+  return false;
+}
+
 function loadManualChannels() {
   let rows = [];
   try {
@@ -267,10 +362,6 @@ function loadManualChannels() {
 
 $(document).ready(function(){
   $('.iproxy-import-label').text('채널 목록 가져오기');
-  $('#manual_channels_import_clear_btn').text('기본 경로');
-  if (!$('#manual_channels_source_path').val().trim()) {
-    $('#manual_channels_source_path').val($('#manual_channels_source_path_default').val() || '');
-  }
   loadManualChannels();
 });
 
@@ -314,13 +405,9 @@ $("body").on('click', '.move-down-btn', function(e){
   renderManualChannels(items);
 });
 
-$("body").on('click', '#manual_channels_import_clear_btn', function(e){
+$("body").on('click', '#manual_channels_replace_btn, #manual_channels_append_btn', async function(e){
   e.preventDefault();
-  $('#manual_channels_source_path').val($('#manual_channels_source_path_default').val() || '');
-});
-
-$("body").on('click', '#manual_channels_import_btn', async function(e){
-  e.preventDefault();
+  const shouldAppend = e.currentTarget && e.currentTarget.id === 'manual_channels_append_btn';
   const sourcePath = ($('#manual_channels_source_path').val() || '').trim();
   const raw = ($('#manual_channels_import').val() || '').trim();
   const importValue = sourcePath || raw;
@@ -337,11 +424,16 @@ $("body").on('click', '#manual_channels_import_btn', async function(e){
       dataType: 'json'
     });
     if (ret && ret.ret === 'success' && Array.isArray(ret.channels)) {
-      renderManualChannels(ret.channels);
+      if (shouldAppend) {
+        const result = appendUniqueManualChannels(ret.channels);
+        $.notify(`${result.addedCount}개 채널을 추가했고 ${result.skippedCount}개 중복은 건너뛰었습니다.`, {type: 'success'});
+      } else {
+        renderManualChannels(ret.channels);
+        $.notify(`${ret.channels.length}개 채널로 목록을 교체했습니다.`, {type: 'success'});
+      }
       if (sourcePath) {
         $('#manual_channels_source_path').val(sourcePath);
       }
-      $.notify(`${ret.channels.length}개 채널을 ${ret.format || '입력'} 형식에서 가져왔습니다.`, {type: 'success'});
     } else {
       $.notify((ret && ret.msg) ? ret.msg : '채널 목록을 가져오지 못했습니다.', {type: 'warning'});
     }
@@ -396,6 +488,11 @@ async function saveEditSettings() {
     const row = rowsToDiagnose[i];
     const channelId = row.dataset.channelId || '';
     const channelUrl = row.querySelector('.manual-url').value.trim();
+    if (isForwardChannelUrl(channelUrl)) {
+      row.querySelector('.manual-type').value = 'forward';
+      row.dataset.typeDiagnosed = 'true';
+      continue;
+    }
     $.notify(`채널 타입을 파악하고 있습니다 (${i + 1}/${rowsToDiagnose.length})`, {type: 'info'});
     try {
       const ret = await $.ajax({
@@ -430,7 +527,8 @@ async function saveEditSettings() {
     dataType: 'json',
     success: function(ret) {
       if (ret && ret.ret === 'success') {
-        $.notify('<strong>설정을 저장했습니다.</strong>', {type: 'success'});
+        const message = (ret && ret.msg ? ret.msg : '설정을 저장했습니다.').replace(' alive.yaml에 ', '<br>alive.yaml에 ');
+        $.notify('<strong>완료</strong><br>' + message, {type: 'success'});
       } else {
         $.notify('<strong>설정 저장에 실패했습니다.</strong><br>' + ((ret && ret.msg) ? ret.msg : ''), {type: 'warning'});
       }
