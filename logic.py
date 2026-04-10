@@ -414,7 +414,7 @@ def parse_manual_channels(raw):
             'type_diagnosed': type_diagnosed,
             'epg_source': normalize_epg_source(value.get('epg_source')),
             'epg_enabled': parse_bool(value.get('epg_enabled')) if value.get('epg_enabled') is not None else True,
-            'hidden': parse_bool(value.get('hidden')) or parse_bool(value.get('adult')),
+            'hidden': parse_bool(value.get('hidden')),
             'rtp': detected_type == 'rtp',
             'source': 'manual',
         })
@@ -490,7 +490,7 @@ def _parse_structured_channels_legacy(data, source='json'):
             'type': '',
             'type_diagnosed': False,
             'epg_enabled': parse_bool(value.get('epg_enabled')) if value.get('epg_enabled') is not None else True,
-            'hidden': parse_bool(value.get('hidden')) or parse_bool(value.get('adult')),
+            'hidden': parse_bool(value.get('hidden')),
             'rtp': False,
             'source': 'json',
         })
@@ -530,7 +530,7 @@ def parse_structured_channels(data, source='json'):
             'type': detected_type,
             'type_diagnosed': type_diagnosed,
             'epg_enabled': parse_bool(value.get('epg_enabled')) if value.get('epg_enabled') is not None else True,
-            'hidden': parse_bool(value.get('hidden')) or parse_bool(value.get('adult')),
+            'hidden': parse_bool(value.get('hidden')),
             'rtp': detected_type == 'rtp',
             'source': source,
         })
@@ -871,7 +871,10 @@ def update_alive_fix_url(req):
 
     alive_channels = []
     alive_mode = get_alive_yaml_mode()
+    include_hidden = ModelSetting.get_bool('include_hidden_channels')
     for channel in get_channels():
+        if channel.get('hidden') and not include_hidden:
+            continue
         payload = make_channel_payload(channel, req)
         channel_name = str(payload.get('name') or '').strip()
         if not channel_name:
@@ -889,7 +892,6 @@ def update_alive_fix_url(req):
             channel_source_indent = len(line) - len(line.lstrip(' '))
             break
 
-    existing_fix_url_channels = []
     fix_url_index = None
     fix_url_end = None
     if channel_source_index is not None:
@@ -903,10 +905,8 @@ def update_alive_fix_url(req):
                     break
         if fix_url_index is not None:
             fix_url_end = _find_block_end(lines, fix_url_index, fix_url_indent)
-            existing_fix_url_channels = parse_alive_fix_url_block(lines[fix_url_index:fix_url_end], fix_url_indent)
 
-    merged_alive_channels = merge_alive_fix_url_channels(existing_fix_url_channels, alive_channels)
-    block_text = build_alive_fix_url_block(merged_alive_channels).rstrip('\n')
+    block_text = build_alive_fix_url_block(alive_channels).rstrip('\n')
 
     if channel_source_index is None:
         if original_text and not original_text.endswith('\n'):
@@ -927,7 +927,7 @@ def update_alive_fix_url(req):
     path.write_text(new_text, encoding='utf-8')
     return {
         'path': str(path),
-        'count': len(merged_alive_channels),
+        'count': len(alive_channels),
     }
 
 
@@ -1280,6 +1280,8 @@ def ffmpeg_probe_input(input_url, timeout=8):
         '-f', 'null',
         '-',
     ])
+    started_at = time.time()
+    logger.info('[DIAG] ffmpeg_probe start url=%s timeout=%s cmd=%s', input_url, timeout, ' '.join(cmd))
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
     timed_out = False
     try:
@@ -1290,7 +1292,7 @@ def ffmpeg_probe_input(input_url, timeout=8):
         _, stderr = proc.communicate()
     success = ('Input #0' in stderr and 'Stream #0' in stderr) or ('Output #0' in stderr)
     width, height = extract_ffmpeg_video_resolution(stderr)
-    return {
+    result = {
         'success': success,
         'timed_out': timed_out,
         'stderr': stderr,
@@ -1300,6 +1302,22 @@ def ffmpeg_probe_input(input_url, timeout=8):
         'width': width,
         'height': height,
     }
+    elapsed = time.time() - started_at
+    logger.info(
+        '[DIAG] ffmpeg_probe done url=%s elapsed=%.2fs success=%s timeout=%s returncode=%s codec=%s size=%sx%s',
+        input_url,
+        elapsed,
+        result['success'],
+        result['timed_out'],
+        result['returncode'],
+        result['video_codec'] or '',
+        result['width'],
+        result['height'],
+    )
+    stderr_preview = ' | '.join([line.strip() for line in (stderr or '').splitlines() if line.strip()][:8])
+    if stderr_preview:
+        logger.info('[DIAG] ffmpeg_probe stderr url=%s preview=%s', input_url, stderr_preview)
+    return result
 
 
 def extract_ffmpeg_video_codec(stderr):
@@ -1439,9 +1457,11 @@ def encoder_is_usable(ffmpeg_path, encoder, force=False, with_device=False):
 
 def probe_channel_type(url, timeout=3):
     parsed = urllib.parse.urlparse(url)
+    logger.info('[DIAG] probe start url=%s timeout=%s scheme=%s', url, timeout, parsed.scheme or '')
     if parsed.scheme in ('http', 'https'):
         iproxy_type = detect_iproxy_api_type(url)
         if iproxy_type:
+            logger.info('[DIAG] probe url_pattern_match url=%s detected_type=%s', url, iproxy_type)
             return {
                 'ret': 'success',
                 'msg': 'I-Proxy API URL 형식을 자동 인식했습니다.',
@@ -1460,6 +1480,14 @@ def probe_channel_type(url, timeout=3):
                 detected_type = 'http_hls'
             else:
                 detected_type = 'http_stream'
+        logger.info(
+            '[DIAG] probe http_result url=%s success=%s timeout=%s returncode=%s detected_type=%s',
+            url,
+            result.get('success'),
+            result.get('timed_out'),
+            result.get('returncode'),
+            detected_type,
+        )
         return {
             'ret': 'success' if detected_type else 'warning',
             'msg': '채널 진단 완료' if detected_type else 'ffmpeg로 HTTP 채널 타입을 확인하지 못했습니다.',
@@ -1471,6 +1499,7 @@ def probe_channel_type(url, timeout=3):
             },
         }
     if parsed.scheme not in ('udp', 'rtp'):
+        logger.info('[DIAG] probe unsupported_scheme url=%s scheme=%s', url, parsed.scheme or '')
         return {
             'ret': 'warning',
             'msg': 'UDP/RTP 채널만 진단할 수 있습니다.',
@@ -1480,6 +1509,7 @@ def probe_channel_type(url, timeout=3):
     host = parsed.hostname
     port = parsed.port
     if not host or not port:
+        logger.info('[DIAG] probe invalid_host_port url=%s host=%s port=%s', url, host or '', port or '')
         return {
             'ret': 'danger',
             'msg': '주소에서 호스트 또는 포트를 확인할 수 없습니다.',
@@ -1493,6 +1523,7 @@ def probe_channel_type(url, timeout=3):
     ]
     attempts = []
     for detected_type, candidate in tests:
+        logger.info('[DIAG] probe transport_try url=%s candidate_type=%s candidate=%s', url, detected_type, candidate)
         result = ffmpeg_probe_input(candidate, timeout=max(5, timeout + 2))
         attempts.append({
             'type': detected_type,
@@ -1500,8 +1531,17 @@ def probe_channel_type(url, timeout=3):
             'timed_out': result['timed_out'],
             'success': result['success'],
         })
+        logger.info(
+            '[DIAG] probe transport_result url=%s candidate_type=%s success=%s timeout=%s returncode=%s',
+            url,
+            detected_type,
+            result.get('success'),
+            result.get('timed_out'),
+            result.get('returncode'),
+        )
         if result['success']:
             suggested_url = urllib.parse.urlunparse((detected_type, f'{host}:{port}', '', '', '', ''))
+            logger.info('[DIAG] probe success url=%s detected_type=%s suggested_url=%s', url, detected_type, suggested_url)
             return {
                 'ret': 'success',
                 'msg': '채널 진단 완료',
@@ -1511,6 +1551,7 @@ def probe_channel_type(url, timeout=3):
                     'ffmpeg_attempts': attempts,
                 },
             }
+    logger.info('[DIAG] probe failed url=%s attempts=%s', url, json.dumps(attempts, ensure_ascii=False))
     return {
         'ret': 'warning',
         'msg': 'ffmpeg로 채널 타입을 확인하지 못했습니다.',
