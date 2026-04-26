@@ -1153,6 +1153,26 @@ def stop_hls(hls_key):
             pass
 
 
+def stop_hls_by_channel(channel_id):
+    """채널 ID에 속한 모든 hls_key 프로세스 및 파일을 정리합니다."""
+    with STATE_LOCK:
+        keys_to_stop = [k for k in list(processes_hls.keys()) if k.startswith(f'{channel_id}__')]
+    for key in keys_to_stop:
+        stop_hls(key)
+    hls_dir = get_hls_dir()
+    prefix = f'{channel_id}__'
+    for file_path in glob.glob(str(hls_dir / f'{prefix}*.ts')):
+        try:
+            os.remove(file_path)
+        except Exception:
+            pass
+    for file_path in glob.glob(str(hls_dir / f'{prefix}*.m3u8')):
+        try:
+            os.remove(file_path)
+        except Exception:
+            pass
+
+
 def _log_process_output(proc, prefix):
     try:
         if proc.stderr is None:
@@ -1276,7 +1296,7 @@ def start_hls(channel_id, options=None):
             '-f', 'hls',
             '-hls_time', str(ModelSetting.get('hls_time')),
             '-hls_list_size', str(ModelSetting.get('hls_list_size')),
-            '-hls_flags', 'delete_segments+append_list+independent_segments+temp_file',
+            '-hls_flags', 'delete_segments+append_list+independent_segments+temp_file+omit_endlist',
             '-hls_segment_filename', get_hls_segment_pattern(hls_key),
             str(get_hls_playlist_path(hls_key)),
         ])
@@ -1285,7 +1305,7 @@ def start_hls(channel_id, options=None):
     cmd = build_hls_command(selected_encoder)
     if should_transcode:
         vaapi_device = (ModelSetting.get('hls_vaapi_device') or '').strip()
-    stop_hls(hls_key)
+    stop_hls_by_channel(channel_id)
     logger.info('[HLS] channel=%s encoder=%s vaapi_device=%s', channel.get('name'), selected_encoder or 'copy', vaapi_device if should_transcode else '')
     logger.info('[HLS] command=%s', subprocess.list2cmdline(cmd))
     proc = subprocess.Popen(
@@ -3270,16 +3290,13 @@ def api_stream(channel_id):
         return redirect(channel['url'], code=302)
 
     if channel['type'] in ('udp', 'rtp'):
-        return Response(stream_via_ffmpeg_copy(channel), mimetype='video/MP2T')
+        return Response(stream_via_ffmpeg_copy(channel), mimetype='video/mp2t')
 
     if channel['type'] == 'http_stream':
-        return Response(stream_via_ffmpeg_copy(channel), mimetype='video/MP2T')
+        return Response(stream_via_ffmpeg_copy(channel), mimetype='video/mp2t')
 
     if channel['type'] == 'http_hls':
-        content = get_proxied_m3u8(channel_id, request)
-        if content is None:
-            abort(502)
-        return Response(content, content_type='application/vnd.apple.mpegurl')
+        return Response(stream_via_ffmpeg_copy(channel), mimetype='video/mp2t')
 
     start_hls_proxy(channel_id)
     item_queue = queue.Queue(maxsize=10)
@@ -3375,4 +3392,4 @@ def api_ts(filename):
     path = get_hls_dir() / filename
     if not path.exists():
         abort(404)
-    return Response(path.read_bytes(), mimetype='video/MP2T')
+    return Response(path.read_bytes(), mimetype='video/mp2t')
